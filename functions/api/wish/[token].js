@@ -34,6 +34,21 @@ export async function onRequestGet({ params, env, request, waitUntil }) {
     if (!wish) return reply({ error: 'not_found' }, 404);
     delete wish.wish_id;
 
+    // Photos live in a private bucket. Only after unlock does the database return their paths;
+    // here they become temporary (1 hour) signed links.
+    if (!wish.locked && Array.isArray(wish.photos) && wish.photos.length) {
+      const r = await fetch(`${env.SUPABASE_URL}/storage/v1/object/sign/wish-photos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: env.SUPABASE_SECRET_KEY },
+        body: JSON.stringify({ expiresIn: 3600, paths: wish.photos.map((p) => p.path) }),
+      });
+      const signed = r.ok ? await r.json() : [];
+      const byPath = Object.fromEntries(signed.map((x) => [x.path, x.signedURL]));
+      wish.photos = wish.photos
+        .map((p) => ({ caption: p.caption, url: byPath[p.path] ? `${env.SUPABASE_URL}/storage/v1${byPath[p.path]}` : null }))
+        .filter((p) => p.url);
+    }
+
     // Count a view once per visitor per 30 minutes (the database enforces that).
     // The visitor id is a one-way hash with a daily-changing salt; no IP is stored.
     if (!new URL(request.url).searchParams.has('poll')) {
@@ -47,4 +62,4 @@ export async function onRequestGet({ params, env, request, waitUntil }) {
   } catch (e) {
     return reply({ error: 'server_error' }, 500);
   }
-  }
+}
