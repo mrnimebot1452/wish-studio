@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Wish Studio · Admin</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;1,9..144,400&family=Hind+Siliguri:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg1:#050a1f;--bg2:#0d1b4a;--accent:#6b8cff;--ink:#eaf0ff;--mute:#9fb0e0;--line:rgba(160,185,255,.22);--bad:#ff8a9b}
+*{box-sizing:border-box;margin:0}
+body{min-height:100vh;background:radial-gradient(120% 70% at 50% 0%,var(--bg2),var(--bg1) 70%) fixed,var(--bg1);color:var(--ink);font:400 16px/1.6 'Hind Siliguri',system-ui,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+.wrap{max-width:720px;margin:0 auto;padding:18px 16px 60px}
+.disp{font-family:'Fraunces',serif;font-weight:500}
+h1{font-size:28px;line-height:1.2}
+.top{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:18px}
+.card{border:1px solid var(--line);border-radius:22px;background:rgba(255,255,255,.055);backdrop-filter:blur(16px);padding:16px}
+.btn{cursor:pointer;border:1px solid var(--line);border-radius:99px;padding:8px 16px;font:500 15px 'Hind Siliguri',sans-serif;color:var(--ink);background:transparent}
+.btn.pri{border:0;background:linear-gradient(135deg,#3b5bff,#7b4dff);color:#fff}
+.btn.bad{color:var(--bad)}
+.btn:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.tabs{display:flex;gap:6px;overflow-x:auto;margin:14px 0}
+.tabs .btn[aria-pressed=true]{background:var(--accent);color:#06103a;border-color:var(--accent)}
+.row{margin-bottom:12px}
+.row h3{font-size:19px;line-height:1.3;overflow-wrap:anywhere}
+.mute{color:var(--mute);font-size:14px}
+.acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.tag{display:inline-block;font-size:12px;border:1px solid var(--line);border-radius:99px;padding:0 9px;color:var(--mute)}
+.f{display:block;margin-bottom:14px}
+.f>span{display:block;font-size:14px;color:var(--mute);margin-bottom:4px}
+.f small{color:var(--mute);font-size:12px}
+input,select,textarea{width:100%;border:1px solid var(--line);border-radius:14px;background:rgba(0,0,0,.28);color:var(--ink);padding:10px 12px;font:inherit}
+input[type=color]{padding:2px;height:44px}input[type=checkbox]{width:auto}
+textarea{resize:vertical;line-height:1.7}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.chk{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+#toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);max-width:90%;padding:10px 18px;border-radius:99px;background:#16224f;border:1px solid var(--line);z-index:9;display:none}
+dialog{border:1px solid var(--line);border-radius:22px;background:#0d1740;color:var(--ink);padding:20px;width:min(92%,520px)}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+<div id="toast" role="status"></div>
+<dialog id="dlg"></dialog>
+<script>
+'use strict';
+const SB='https://kszbowgrkdzgrnwsejbp.supabase.co',PUB='sb_publishable_ubyQDK6dEb-9z9OQYCH1rg_CavmDv7_';
+const $=s=>document.querySelector(s);
+const h=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
+const mk=(t,a)=>Object.assign(document.createElement(t),a||{});
+let sess=null;try{sess=JSON.parse(localStorage.getItem('ws_admin')||'null')}catch(e){}
+const S={tab:'all',q:'',wishes:[]};
+const OCC=[['birthday','Birthday'],['anniversary','Anniversary'],['friendship','Friendship'],['congratulations','Congratulations'],['special_day','Special Day'],['custom','Custom occasion']];
+const THEMES=[['midnight','Midnight'],['aurora','Aurora'],['rose','Rosé'],['ember','Ember']];
+const ANIMS=[['particles','Floating particles'],['stars','Gentle stars'],['orbs','Soft glowing orbs'],['fireflies','Fireflies'],['petals','Falling petals'],['confetti','Confetti'],['shooting_stars','Shooting stars'],['none','None']];
+const fmt=t=>t?new Intl.DateTimeFormat('en-GB',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Dhaka'}).format(new Date(t))+' (Dhaka)':'No lock';
+const toLocal=t=>t?new Date(new Date(t).getTime()+6*3600e3).toISOString().slice(0,16):'';
+
+let tt;function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(tt);tt=setTimeout(()=>t.style.display='none',3500)}
+async function auth(body,grant){
+  const r=await fetch(`${SB}/auth/v1/token?grant_type=${grant}`,{method:'POST',headers:{apikey:PUB,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j=await r.json();if(!r.ok)throw new Error(j.error_description||j.msg||'Sign-in failed');
+  sess={access_token:j.access_token,refresh_token:j.refresh_token};localStorage.setItem('ws_admin',JSON.stringify(sess));
+}
+async function api(url,init,retry=true){
+  init=init||{};
+  const r=await fetch(url,{...init,headers:{apikey:PUB,Authorization:'Bearer '+sess.access_token,'Content-Type':'application/json',...(init.headers||{})}});
+  if(r.status===401&&retry){try{await auth({refresh_token:sess.refresh_token},'refresh_token')}catch(e){logout();throw e}return api(url,init,false)}
+  return r;
+}
+async function must(r){if(r.ok)return r;let m='Something went wrong';try{const j=await r.json();m=j.error||j.message||m}catch(e){}throw new Error(m)}
+function logout(){try{fetch(`${SB}/auth/v1/logout`,{method:'POST',headers:{apikey:PUB,Authorization:'Bearer '+(sess&&sess.access_token)}})}catch(e){}sess=null;localStorage.removeItem('ws_admin');show()}
+
+function loginView(){
+  const a=$('#app');a.replaceChildren();
+  const c=h('form','card');c.style.marginTop='12vh';
+  const em=mk('input',{type:'email',autocomplete:'username',required:true}),pw=mk('input',{type:'password',autocomplete:'current-password',required:true});
+  const b=mk('button',{className:'btn pri',type:'submit',textContent:'Sign in'});
+  const lab=(t,i)=>{const l=h('label','f');l.append(h('span',null,t),i);return l};
+  c.append(h('h1','disp','Wish Studio'),h('p','mute','Owner sign-in'),lab('Email',em),lab('Password',pw),b);
+  c.onsubmit=async e=>{e.preventDefault();b.disabled=true;try{await auth({email:em.value,password:pw.value},'password');show()}catch(x){toast(x.message);b.disabled=false}};
+  a.append(c);
+}
+async function load(){
+  const r=await must(await api(`${SB}/rest/v1/wishes?select=id,occasion,recipient_name,heading,status,unlock_at,updated_at&order=updated_at.desc`));
+  S.wishes=await r.json();
+}
+const kind=w=>w.status==='draft'?'draft':w.status==='disabled'?'disabled':(w.unlock_at&&new Date(w.unlock_at)>new Date()?'scheduled':'published');
+
+function listView(){
+  const a=$('#app');a.replaceChildren();
+  const top=h('div','top'),nw=h('button','btn pri','+ New wish'),lo=h('button','btn','Sign out');
+  nw.onclick=()=>editView(null);lo.onclick=logout;
+  const bx=h('div');bx.style.cssText='display:flex;gap:8px';bx.append(nw,lo);
+  top.append(h('h1','disp','Your wishes'),bx);a.append(top);
+  const cnt={all:S.wishes.length};S.wishes.forEach(w=>cnt[kind(w)]=(cnt[kind(w)]||0)+1);
+  const tabs=h('div','tabs');
+  [['all','All'],['draft','Draft'],['scheduled','Scheduled'],['published','Published'],['disabled','Disabled']].forEach(([k,l])=>{
+    const b=h('button','btn',`${l} ${cnt[k]||0}`);b.setAttribute('aria-pressed',S.tab===k);b.onclick=()=>{S.tab=k;listView()};tabs.append(b)});
+  const q=mk('input',{type:'search',placeholder:'Search name or heading',value:S.q});q.oninput=()=>{S.q=q.value;paint()};
+  a.append(q,tabs);
+  const box=h('div');a.append(box);
+  function paint(){
+    box.replaceChildren();
+    const t=S.q.toLowerCase();
+    const L=S.wishes.filter(w=>(S.tab==='all'||kind(w)===S.tab)&&(w.recipient_name+' '+w.heading).toLowerCase().includes(t));
+    if(!L.length)box.append(h('p','mute','Nothing here yet.'));
+    L.forEach(w=>{
+      const c=h('div','card row');
+      c.append(h('h3','disp',w.heading||'(no heading)'),h('p','mute',`For ${w.recipient_name} · ${w.occasion}`));
+      const p=h('p','mute');p.append(h('span','tag',kind(w)),' ',document.createTextNode('Unlocks: '+fmt(w.unlock_at)));c.append(p);
+      const ac=h('div','acts');
+      const btn=(t,f,cl)=>{const b=h('button','btn '+(cl||''),t);b.onclick=async()=>{b.disabled=true;try{await f()}catch(e){toast(e.message)}b.disabled=false};ac.append(b)};
+      btn('Edit',()=>editView(w.id));
+      btn('Link',()=>showLink(w.id));
+      btn(w.status==='published'?'Disable':'Publish',async()=>{await must(await api(`${SB}/rest/v1/wishes?id=eq.${w.id}`,{method:'PATCH',body:JSON.stringify({status:w.status==='published'?'disabled':'published'})}));await refresh();toast('Updated')});
+      btn('Duplicate',async()=>{const r=await must(await api(`${SB}/rest/v1/wishes?id=eq.${w.id}&select=*`));const o=(await r.json())[0];
+        o.heading=(o.heading+' (copy)').slice(0,120);o.status='draft';await must(await api('/api/admin/create',{method:'POST',body:JSON.stringify(o)}));await refresh();toast('Duplicated as draft')});
+      btn('Delete',async()=>{if(!confirm('Delete this wish and its link permanently?'))return;await must(await api(`${SB}/rest/v1/wishes?id=eq.${w.id}`,{method:'DELETE'}));await refresh();toast('Deleted')},'bad');
+      c.append(ac);box.append(c);
+    });
+  }
+  paint();
+}
+async function refresh(){await load();listView()}
+async function showLink(id){
+  const r=await must(await api('/api/admin/link',{method:'POST',body:JSON.stringify({id})}));const {link}=await r.json();linkDialog(link);
+}
+function linkDialog(link){
+  const d=$('#dlg');d.replaceChildren();
+  const i=mk('input',{readOnly:true,value:link});
+  const cp=h('button','btn pri','Copy'),sh=h('button','btn','Share'),cl=h('button','btn','Close');
+  cp.onclick=async()=>{try{await navigator.clipboard.writeText(link);toast('Link copied')}catch(e){i.select();toast('Press and hold to copy')}};
+  sh.onclick=()=>{if(navigator.share)navigator.share({url:link}).catch(()=>{});else toast('Sharing not supported here')};
+  cl.onclick=()=>d.close();
+  const ac=h('div','acts');ac.append(cp,sh,cl);
+  d.append(h('h3','disp','Secret link'),h('p','mute','Anyone with this link can open the wish after its unlock time.'),i,ac);
+  d.showModal();
+}
+
+async function editView(id){
+  let w={occasion:'birthday',theme:'midnight',accent_color:'#6b8cff',animation_style:'particles',animation_intensity:60,show_intro:true,tap_to_continue:true,heading:'',message:'',signature:'',recipient_name:'',custom_occasion:'',event_date:'',photo_link_url:'',unlock_at:null};
+  if(id){try{const r=await must(await api(`${SB}/rest/v1/wishes?id=eq.${id}&select=*`));w=(await r.json())[0]}catch(e){toast(e.message);return}}
+  const a=$('#app');a.replaceChildren();
+  const f={};
+  const sel=(o,v)=>{const s=mk('select');o.forEach(([k,l])=>s.append(mk('option',{value:k,textContent:l})));s.value=v;return s};
+  const field=(l,el,hint)=>{const d=h('label','f');d.append(h('span',null,l),el);if(hint)d.append(h('small',null,hint));return d};
+  f.occasion=sel(OCC,w.occasion);f.custom=mk('input',{maxLength:60,value:w.custom_occasion||'',placeholder:'e.g. Graduation'});
+  f.name=mk('input',{maxLength:80,value:w.recipient_name,required:true});
+  f.date=mk('input',{type:'date',value:w.event_date||''});
+  f.unlock=mk('input',{type:'datetime-local',value:toLocal(w.unlock_at)});
+  f.heading=mk('input',{maxLength:120,value:w.heading});
+  f.message=mk('textarea',{rows:14,maxLength:20000,value:w.message});
+  const cnt=h('small',null,'');const upd=()=>cnt.textContent=`${f.message.value.length} / 20000`;f.message.oninput=upd;upd();
+  f.sig=mk('input',{maxLength:120,value:w.signature});
+  f.theme=sel(THEMES,w.theme);f.accent=mk('input',{type:'color',value:w.accent_color});
+  f.anim=sel(ANIMS,w.animation_style);f.int=mk('input',{type:'range',min:0,max:100,value:w.animation_intensity});
+  f.intro=mk('input',{type:'checkbox',checked:w.show_intro});f.tap=mk('input',{type:'checkbox',checked:w.tap_to_continue});
+  f.link=mk('input',{type:'url',placeholder:'https://…',value:w.photo_link_url||''});
+  const cu=field('Custom occasion name',f.custom);const tog=()=>cu.style.display=f.occasion.value==='custom'?'block':'none';f.occasion.onchange=tog;tog();
+  const g=h('div','g2');g.append(field('Theme',f.theme),field('Accent color',f.accent));
+  const ck=(el,t)=>{const d=h('label','chk');d.append(el,h('span',null,t));return d};
+  const top=h('div','top'),bk=h('button','btn','← Back');bk.onclick=()=>show();top.append(h('h1','disp',id?'Edit wish':'New wish'),bk);
+  const m=field('Main message',f.message);m.append(cnt);
+  const cd=h('div','card');
+  cd.append(field('Occasion',f.occasion),cu,field('Recipient name',f.name),field('Event date (optional)',f.date),
+    field('Unlock date & time (Dhaka time)',f.unlock,'Leave empty to open immediately once published.'),
+    field('Heading',f.heading),m,field('Signature',f.sig),g,field('Animation',f.anim),field('Animation intensity',f.int),
+    ck(f.intro,'Show intro screen'),ck(f.tap,'Tap to continue'),field('Photos link (optional, https)',f.link,'Shown as a button on the wish page.'));
+  const ac=h('div','acts');
+  async function save(status){
+    if(!f.name.value.trim()){toast('Recipient name is required');return}
+    const row={occasion:f.occasion.value,custom_occasion:f.occasion.value==='custom'?(f.custom.value||null):null,recipient_name:f.name.value.trim(),
+      event_date:f.date.value||null,unlock_at:f.unlock.value?f.unlock.value+':00+06:00':null,heading:f.heading.value,message:f.message.value,signature:f.sig.value,
+      theme:f.theme.value,accent_color:f.accent.value,animation_style:f.anim.value,animation_intensity:+f.int.value,
+      show_intro:f.intro.checked,tap_to_continue:f.tap.checked,photo_link_url:f.link.value||null,status};
+    try{
+      if(id){await must(await api(`${SB}/rest/v1/wishes?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(row)}));toast(status==='published'?'Published':'Saved');await show();if(status==='published')showLink(id)}
+      else{const r=await must(await api('/api/admin/create',{method:'POST',body:JSON.stringify(row)}));const j=await r.json();await show();if(status==='published')linkDialog(j.link);else toast('Draft saved')}
+    }catch(e){toast(e.message)}
+  }
+  const sd=h('button','btn','Save draft'),pb=h('button','btn pri','Publish');sd.onclick=()=>save('draft');pb.onclick=()=>save('published');
+  ac.append(sd,pb);cd.append(ac);a.append(top,cd);
+}
+async function show(){if(!sess){loginView();return}try{await load();listView()}catch(e){loginView()}}
+show();
+</script>
+</body>
+</html>
