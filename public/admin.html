@@ -33,7 +33,17 @@ h1{font-size:28px;line-height:1.2}
 input,select,textarea{width:100%;border:1px solid var(--line);border-radius:14px;background:rgba(0,0,0,.28);color:var(--ink);padding:10px 12px;font:inherit}
 input[type=color]{padding:2px;height:44px}input[type=checkbox]{width:auto}
 textarea{resize:vertical;line-height:1.7}
-.g2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+html,body{overflow-x:hidden}
+input,select,textarea{min-width:0;max-width:100%;color-scheme:dark}
+option{background:#0d1740;color:#eaf0ff}input[type=file]{padding:8px}
+.g2,.dt,.dt3{display:grid;gap:8px;grid-template-columns:repeat(2,minmax(0,1fr))}
+.dt,.dt3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g2>*,.dt>*,.dt3>*{min-width:0}
+.dt .w,.dt3,.dt .sum{grid-column:1/-1}
+.dt .sum{color:var(--mute);font-size:13px}
+.dt .clr{justify-self:start}
+.pg{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:12px 0}
+.ph img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:14px;display:block;background:rgba(255,255,255,.06);margin-bottom:6px}
 .chk{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 #toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);max-width:90%;padding:10px 18px;border-radius:99px;background:#16224f;border:1px solid var(--line);z-index:9;display:none}
 dialog{border:1px solid var(--line);border-radius:22px;background:#0d1740;color:var(--ink);padding:20px;width:min(92%,520px)}
@@ -67,7 +77,7 @@ async function auth(body,grant){
 async function api(url,init,retry=true){
   init=init||{};
   const r=await fetch(url,{...init,headers:{apikey:PUB,Authorization:'Bearer '+sess.access_token,'Content-Type':'application/json',...(init.headers||{})}});
-  if(r.status===401&&retry){try{await auth({refresh_token:sess.refresh_token},'refresh_token')}catch(e){logout();throw e}return api(url,init,false)}
+  if((r.status===401||(r.status===403&&String(url).startsWith('/api/')))&&retry){try{await auth({refresh_token:sess.refresh_token},'refresh_token')}catch(e){logout();throw e}return api(url,init,false)}
   return r;
 }
 async function must(r){if(r.ok)return r;let m='Something went wrong';try{const j=await r.json();m=j.error||j.message||m}catch(e){}throw new Error(m)}
@@ -140,17 +150,94 @@ function linkDialog(link){
   d.showModal();
 }
 
+const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],DAY=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const pad=n=>String(n).padStart(2,'0'),Z=6*3600e3;
+/* Photos: pick from the phone gallery, shrunk automatically, preview here, shown on the wish page after unlock. */
+function photoBox(id){
+  const box=h('div','card');box.style.marginTop='14px';
+  box.append(h('h3','disp','Photos'));
+  if(!id){box.append(h('p','mute','Save as draft first, then you can add photos here.'));return box}
+  const grid=h('div','pg'),add=mk('input',{type:'file',accept:'image/*',multiple:true}),st=h('p','mute','');
+  box.append(h('p','mute','Photos are made smaller automatically. Visitors see them only after the wish unlocks.'),grid,add,st);
+  async function paint(){
+    grid.replaceChildren();
+    const r=await must(await api(`${SB}/rest/v1/wish_photos?wish_id=eq.${id}&select=id,storage_path&order=created_at`));
+    for(const p of await r.json()){
+      const c=h('div','ph'),im=document.createElement('img');
+      api(`${SB}/storage/v1/object/authenticated/wish-photos/${p.storage_path}`).then(x=>x.blob()).then(b=>{im.src=URL.createObjectURL(b)}).catch(()=>{});
+      const x=h('button','btn bad','Remove');x.type='button';
+      x.onclick=async()=>{x.disabled=true;try{await api(`${SB}/storage/v1/object/wish-photos/${p.storage_path}`,{method:'DELETE'});await must(await api(`${SB}/rest/v1/wish_photos?id=eq.${p.id}`,{method:'DELETE'}));paint()}catch(e){toast(e.message);x.disabled=false}};
+      c.append(im,x);grid.append(c);
+    }
+  }
+  add.onchange=async()=>{
+    for(const f of add.files){
+      st.textContent='Uploading '+f.name+'…';
+      try{
+        const bmp=await createImageBitmap(f),s=Math.min(1,1600/Math.max(bmp.width,bmp.height)),cv=document.createElement('canvas');
+        cv.width=Math.round(bmp.width*s);cv.height=Math.round(bmp.height*s);cv.getContext('2d').drawImage(bmp,0,0,cv.width,cv.height);
+        const blob=await new Promise(r=>cv.toBlob(r,'image/jpeg',.82));
+        const path=id+'/'+crypto.randomUUID()+'.jpg';
+        await must(await api(`${SB}/storage/v1/object/wish-photos/${path}`,{method:'POST',headers:{'Content-Type':'image/jpeg'},body:blob}));
+        await must(await api(`${SB}/rest/v1/wish_photos`,{method:'POST',body:JSON.stringify({wish_id:id,storage_path:path})}));
+      }catch(e){toast(e.message)}
+    }
+    add.value='';st.textContent='';paint().catch(e=>toast(e.message));
+  };
+  paint().catch(e=>toast(e.message));
+  return box;
+}
+
+/* Links & video: owner adds any links with their own English/Bengali button text. YouTube video links play inside the wish. */
+const TPL={photos:['See photos','ছবি দেখুন'],video:['Watch the video','ভিডিও দেখুন'],music:['Listen','গান শুনুন'],memories:['Our memories','আমাদের স্মৃতি'],link:['','']};
+const TPLN={photos:'Photos link',video:'Video (YouTube, plays on the page)',music:'Music link',memories:'Memories link',link:'Custom link'};
+const YT=/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([\w-]{11})/;
+function linksBox(id){
+  const box=h('div','card');box.style.marginTop='14px';
+  box.append(h('h3','disp','Links & video'));
+  if(!id){box.append(h('p','mute','Save as draft first, then add links here.'));return box}
+  const list=h('div'),form=h('div');form.style.cssText='display:grid;gap:8px;margin-top:10px';
+  const ks=mk('select');Object.entries(TPLN).forEach(([k,l])=>ks.append(mk('option',{value:k,textContent:l})));
+  const en=mk('input',{maxLength:60,placeholder:'Button text (English)'}),bn=mk('input',{maxLength:60,placeholder:'বোতামের লেখা (বাংলা)'}),url=mk('input',{type:'url',placeholder:'https://…'});
+  const fill=()=>{en.value=TPL[ks.value][0];bn.value=TPL[ks.value][1]};ks.onchange=fill;fill();
+  const add=h('button','btn pri','Add link');add.type='button';
+  form.append(ks,en,bn,url,add);
+  box.append(h('p','mute','Video: upload it to YouTube as "Unlisted", paste the link here, and it plays inside the wish. Other links open as buttons.'),list,form);
+  async function paint(){
+    list.replaceChildren();
+    const r=await must(await api(`${SB}/rest/v1/wish_links?wish_id=eq.${id}&select=id,kind,label_en,label_bn,url&order=created_at`));
+    for(const l of await r.json()){
+      const c=h('div','card row'),m=YT.exec(l.url);
+      c.append(h('span','tag',l.kind),h('p',null,(l.label_en||'')+' / '+(l.label_bn||'')),h('p','mute',l.url));
+      if(l.kind==='video'&&m){const f=document.createElement('iframe');f.src='https://www.youtube-nocookie.com/embed/'+m[1];f.style.cssText='width:100%;aspect-ratio:16/9;border:0;border-radius:14px;margin-top:8px';f.allowFullscreen=true;c.append(f)}
+      const x=h('button','btn bad','Remove');x.type='button';x.style.marginTop='8px';
+      x.onclick=async()=>{x.disabled=true;try{await must(await api(`${SB}/rest/v1/wish_links?id=eq.${l.id}`,{method:'DELETE'}));paint()}catch(e){toast(e.message);x.disabled=false}};
+      c.append(x);list.append(c);
+    }
+  }
+  add.onclick=async()=>{
+    const u=url.value.trim();
+    if(!/^https:\/\//.test(u)){toast('The link must start with https://');return}
+    if(ks.value==='video'&&!YT.test(u)){toast('For a video on the page, use a YouTube link');return}
+    add.disabled=true;
+    try{await must(await api(`${SB}/rest/v1/wish_links`,{method:'POST',body:JSON.stringify({wish_id:id,kind:ks.value,label_en:en.value||null,label_bn:bn.value||null,url:u})}));url.value='';toast('Added');paint()}catch(e){toast(e.message)}
+    add.disabled=false;
+  };
+  paint().catch(e=>toast(e.message));
+  return box;
+}
+
 async function editView(id){
   let w={occasion:'birthday',theme:'midnight',accent_color:'#6b8cff',animation_style:'particles',animation_intensity:60,show_intro:true,tap_to_continue:true,heading:'',message:'',signature:'',recipient_name:'',custom_occasion:'',event_date:'',photo_link_url:'',unlock_at:null};
   if(id){try{const r=await must(await api(`${SB}/rest/v1/wishes?id=eq.${id}&select=*`));w=(await r.json())[0]}catch(e){toast(e.message);return}}
   const a=$('#app');a.replaceChildren();
   const f={};
   const sel=(o,v)=>{const s=mk('select');o.forEach(([k,l])=>s.append(mk('option',{value:k,textContent:l})));s.value=v;return s};
-  const field=(l,el,hint)=>{const d=h('label','f');d.append(h('span',null,l),el);if(hint)d.append(h('small',null,hint));return d};
+  const field=(l,el,hint)=>{const d=h(el.classList&&el.classList.contains('dt')?'div':'label','f');d.append(h('span',null,l),el);if(hint)d.append(h('small',null,hint));return d};
   f.occasion=sel(OCC,w.occasion);f.custom=mk('input',{maxLength:60,value:w.custom_occasion||'',placeholder:'e.g. Graduation'});
   f.name=mk('input',{maxLength:80,value:w.recipient_name,required:true});
   f.date=mk('input',{type:'date',value:w.event_date||''});
-  f.unlock=mk('input',{type:'datetime-local',value:toLocal(w.unlock_at)});
+  f.unlock=mk('input',{type:'datetime-local',value:toLocal(w.unlock_at),min:new Date(Date.now()+Z).toISOString().slice(0,16)});
   f.heading=mk('input',{maxLength:120,value:w.heading});
   f.message=mk('textarea',{rows:14,maxLength:20000,value:w.message});
   const cnt=h('small',null,'');const upd=()=>cnt.textContent=`${f.message.value.length} / 20000`;f.message.oninput=upd;upd();
@@ -158,31 +245,32 @@ async function editView(id){
   f.theme=sel(THEMES,w.theme);f.accent=mk('input',{type:'color',value:w.accent_color});
   f.anim=sel(ANIMS,w.animation_style);f.int=mk('input',{type:'range',min:0,max:100,value:w.animation_intensity});
   f.intro=mk('input',{type:'checkbox',checked:w.show_intro});f.tap=mk('input',{type:'checkbox',checked:w.tap_to_continue});
-  f.link=mk('input',{type:'url',placeholder:'https://…',value:w.photo_link_url||''});
   const cu=field('Custom occasion name',f.custom);const tog=()=>cu.style.display=f.occasion.value==='custom'?'block':'none';f.occasion.onchange=tog;tog();
   const g=h('div','g2');g.append(field('Theme',f.theme),field('Accent color',f.accent));
   const ck=(el,t)=>{const d=h('label','chk');d.append(el,h('span',null,t));return d};
   const top=h('div','top'),bk=h('button','btn','← Back');bk.onclick=()=>show();top.append(h('h1','disp',id?'Edit wish':'New wish'),bk);
   const m=field('Main message',f.message);m.append(cnt);
   const cd=h('div','card');
-  cd.append(field('Occasion',f.occasion),cu,field('Recipient name',f.name),field('Event date (optional)',f.date),
-    field('Unlock date & time (Dhaka time)',f.unlock,'Leave empty to open immediately once published.'),
+  cd.append(field('Occasion',f.occasion),cu,field('Recipient name',f.name),field('Event date (optional)',f.date,'Tap the box to open the calendar. Tap the month or year at the top to jump to any year.'),
+    field('Unlock date & time (Dhaka time)',f.unlock,'Tap the box to choose the day and then the time. Today or later only. Leave empty to open as soon as it is published.'),
     field('Heading',f.heading),m,field('Signature',f.sig),g,field('Animation',f.anim),field('Animation intensity',f.int),
-    ck(f.intro,'Show intro screen'),ck(f.tap,'Tap to continue'),field('Photos link (optional, https)',f.link,'Shown as a button on the wish page.'));
+    ck(f.intro,'Show intro screen'),ck(f.tap,'Tap to continue'));
   const ac=h('div','acts');
   async function save(status){
     if(!f.name.value.trim()){toast('Recipient name is required');return}
+    if(f.unlock.value&&f.unlock.value!==toLocal(w.unlock_at)&&Date.parse(f.unlock.value+':00+06:00')<=Date.now()){toast('That time has already passed. Choose a later time today, or a later day.');return}
+    if(f.date.invalid){toast('Event date: choose day, month and a 4-digit year, or press Clear');return}
     const row={occasion:f.occasion.value,custom_occasion:f.occasion.value==='custom'?(f.custom.value||null):null,recipient_name:f.name.value.trim(),
       event_date:f.date.value||null,unlock_at:f.unlock.value?f.unlock.value+':00+06:00':null,heading:f.heading.value,message:f.message.value,signature:f.sig.value,
       theme:f.theme.value,accent_color:f.accent.value,animation_style:f.anim.value,animation_intensity:+f.int.value,
-      show_intro:f.intro.checked,tap_to_continue:f.tap.checked,photo_link_url:f.link.value||null,status};
+      show_intro:f.intro.checked,tap_to_continue:f.tap.checked,status};
     try{
       if(id){await must(await api(`${SB}/rest/v1/wishes?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(row)}));toast(status==='published'?'Published':'Saved');await show();if(status==='published')showLink(id)}
-      else{const r=await must(await api('/api/admin/create',{method:'POST',body:JSON.stringify(row)}));const j=await r.json();await show();if(status==='published')linkDialog(j.link);else toast('Draft saved')}
+      else{const r=await must(await api('/api/admin/create',{method:'POST',body:JSON.stringify(row)}));const j=await r.json();if(status==='published'){await show();linkDialog(j.link)}else{toast('Draft saved. You can add photos now.');editView(j.id)}}
     }catch(e){toast(e.message)}
   }
   const sd=h('button','btn','Save draft'),pb=h('button','btn pri','Publish');sd.onclick=()=>save('draft');pb.onclick=()=>save('published');
-  ac.append(sd,pb);cd.append(ac);a.append(top,cd);
+  ac.append(sd,pb);cd.append(ac);a.append(top,cd,photoBox(id),linksBox(id));
 }
 async function show(){if(!sess){loginView();return}try{await load();listView()}catch(e){loginView()}}
 show();
